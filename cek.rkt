@@ -1,39 +1,39 @@
-;; CEK Machine
 #lang racket
+;; CEK Machine
+
+(require "church.rkt")
 
 ;; Expression language
 (define (expr? e)
   (match e
     [(? symbol?) #t]
-    [(? lit?) #t]
     [`(,(? expr?) ,(? expr?)) #t]
     [`(lambda (,x) ,(? expr?)) #t]
-    [`(prim ,(? expr?) ,(? expr?)) #t]
-    [`(if ,(? expr?) ,(? expr?) ,(? expr?)) #t]
     [else #f]))
 
+;; Literals
 (define (lit? l)
   (or (number? l) (boolean? l)))
 
+;; Environments
 (define (env? e)
   (and (andmap (lambda (key) (symbol? key)) (hash-keys e))
        (andmap value? (hash-values e))))
 
+;; Values are either literals or closures
 (define (value? v)
   (match v
     [(? lit?) #t]
     [`(clo (lambda (,x) ,(? expr?)) ,(? env?)) #t]))
 
+;; Continuation forms
 (define (kont? k)
   (match k
     ['mt #t]
     [`(ar ,(? expr?) ,(? env?) ,(? kont?)) #t]
-    [`(fn (lambda (,x) ,(? expr?)) ,(? env?) ,(? kont?)) #t]
-    [`(prim-rhs ,prim ,(? expr?)) #t]
-    [`(apply-prim ,prim ,(? value?)) #t]
-    ;; if...
-    ))
+    [`(fn (lambda (,x) ,(? expr?)) ,(? env?) ,(? kont?)) #t]))
 
+;; A state is C, E, K
 (define (cesk*-state? state)
   (match state
     [`(,(? expr?) ,(? env?) ,(? kont?)) #t]
@@ -46,47 +46,66 @@
 ;; Examples
 (define id-id '((lambda (x) x) (lambda (x) x)))
 (define omega '((lambda (x) (x x)) (lambda (x) (x x))))
+(define id-id-id-id '(((lambda (x) x) (lambda (x) x)) ((lambda (x) x) (lambda (x) x))))
 
 ;; Step relation
 (define (step state)
   (match state
     ;; Variable lookup
-    [`(,(? symbol? x) ,env ,sto ,a) 
-     (match (hash-ref sto (hash-ref env x))
+    [`(,(? symbol? x) ,env ,k) 
+     (match (hash-ref env x)
        [`(clo (lambda (,x) ,body) ,rho-prime)
-        `((lambda (,x) ,body) ,rho-prime ,sto ,a)])]
+        `((lambda (,x) ,body) ,rho-prime ,k)])]
     ;; Application
-    [`((,e0 ,e1) ,ρ ,σ ,a)
-     (let* ([b (fresh-addr)]
-            [new-k `(ar ,e1 ,ρ ,a)]
-            [new-σ (hash-set σ b new-k)])
-       `(,e0 ,ρ ,new-σ ,b))]
+    [`((,e0 ,e1) ,ρ ,k)
+     (let* ([new-k `(ar ,e1 ,ρ ,k)])
+       `(,e0 ,ρ ,new-k))]
     ;; Lambdas...
-    [`(,v ,ρ ,σ ,a)
-     (let ([k (hash-ref σ a)]
-           [b (fresh-addr)])
-       (match k
-         [`(ar ,e ,ρ1 ,c)
-          `(,e ,ρ1 ,(hash-set σ b `(fn ,v ,ρ ,c)) ,b)]
-         [`(fn (lambda (,x) ,e) ,ρ1 ,c)
-          `(,e ,(hash-set ρ1 x b) ,(hash-set σ b `(clo ,v ,ρ)) ,c)]
-         [else state]))]))
+    [`((lambda (,x) ,e-body) ,ρ ,k)
+     (match k
+       [`(ar ,e ,ρ1 ,k1)
+        `(,e ,ρ1 (fn (lambda (,x) ,e-body) ,ρ ,k1))]
+       [`(fn (lambda (,x1) ,e1) ,ρ1 ,k1)
+        `(,e1 ,(hash-set ρ1 x1 `(clo (lambda (,x) ,e-body) ,ρ)) ,k1)])]))
 
+;; Is this state at a done configuration
+(define (done? state)
+  (match state
+    [`((lambda (,x) ,e) ,ρ 'mt) #t]
+    [else #f]))
+
+;; Iterate the state to a final answer, build up a transition graph.
 (define (iterate state)
-  (displayln "Iterating state...")
-  (pretty-print state)
-  (let ([next-state (step state)])
-    (if (equal? next-state state)
-        ;; Done
-        (displayln "Done w/ evaluation.")
-        (iterate next-state))))
+  (define (h state state-graph last-state)
+    (if (done? state)
+        (begin (displayln "done!") (pretty-print state) state-graph)
+        (let* ([next-state (step state)]
+               ;; Add to the state graph by adding an edge between the
+               ;; last state and this state.
+               [next-state-graph
+                (if (null? last-state)
+                    (hash-set state-graph next-state (set))
+                    (hash-set state-graph
+                              last-state
+                              (set-add (hash-ref state-graph last-state (set)) next-state)))])
+          (displayln (format "--> ~a" (pretty-format state)))
+          (h next-state next-state-graph next-state))))
+  (h state (hash) null))
 
+;;
+;; REPL
+;;
+
+;; Run a REPL
 (define (repl)
   (displayln "Type an expression...")
   (display "> ")
   (let ([input (read)])
-    ;; Execute the expression
-    (iterate (inject input))
+    (if (expr? input)
+        ;; Execute the expression
+        (pretty-print (iterate (inject input)))
+        (displayln "Input expression does not satisfy expr?"))
     (repl)))
 
+;; Top level entry point to the program
 (repl)
