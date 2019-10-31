@@ -1,14 +1,35 @@
+;; Project 1 -- CIS 700
+;; Implementing an ANF-style lambda calculus
+;; 
+;; For this project, you will implement a CEK-style interpreter for
+;; the 
 #lang racket
 ;; CEK Machine
 
 (require "church.rkt")
 
+;; Atomic expressions
+(define (aexpr? ae)
+  (match ae
+    ;; Variables
+    [(? symbol? x) #t]
+    ;; Literals
+    [(? number? n) #t]
+    ;; Booleans
+    [(? boolean? b) #t]
+    ;; Lambdas
+    [`(lambda (,(? symbol? xs) ...) ,(? expr?)) #t]
+    [else #f]))
+
 ;; Expression language
 (define (expr? e)
   (match e
-    [(? symbol?) #t]
-    [`(,(? expr?) ,(? expr?)) #t]
-    [`(lambda (,x) ,(? expr?)) #t]
+    ;; Function calls
+    [`(,(? aexpr? ae0) ,(? aexpr? aes) ...) #t]
+    ;; Let forms
+    [`(let ([x ,(? expr? e)]) ,(? expr? let-body)) #t]
+    ;; Returns
+    [(? aexpr? ae) #t]
     [else #f]))
 
 ;; Literals
@@ -30,43 +51,46 @@
 (define (kont? k)
   (match k
     ['mt #t]
-    [`(ar ,(? expr?) ,(? env?) ,(? kont?)) #t]
-    [`(fn (lambda (,x) ,(? expr?)) ,(? env?) ,(? kont?)) #t]))
+    [`(let ,(? symbol? x) ,(? expr? let-body)) #t]))
 
 ;; A state is C, E, K
-(define (cesk*-state? state)
+(define (state? state)
   (match state
     [`(,(? expr?) ,(? env?) ,(? kont?)) #t]
     [else #f]))
 
-;; Create a CESK* state from e
+;; Create a CEK state from e
 (define (inject e)
   `(,e ,(hash) 'mt))
 
 ;; Examples
-(define id-id '((lambda (x) x) (lambda (x) x)))
-(define omega '((lambda (x) (x x)) (lambda (x) (x x))))
-(define id-id-id-id '(((lambda (x) x) (lambda (x) x)) ((lambda (x) x) (lambda (x) x))))
+(define id-id '(let ([x (lambda (x) x)]) (x x)))
+(define omega '(let ([x (lambda (x) (x x))]) (x x)))
+(define id-id-id-id '(let ([x (lambda (x) x)]) (let ([y x x]) (y y))))
+
+(define (aeval ae ρ)
+  (match ae
+    [(? number? n) n]
+    [(? boolean? b) b]
+    [(? symbol? x) (hash-ref ρ x)]
+    [`(lambda (,x) ,e) `(clo ,ae ,ρ)]))
 
 ;; Step relation
 (define (step state)
   (match state
-    ;; Variable lookup
-    [`(,(? symbol? x) ,env ,k) 
-     (match (hash-ref env x)
-       [`(clo (lambda (,x) ,body) ,rho-prime)
-        `((lambda (,x) ,body) ,rho-prime ,k)])]
+    ;; Returns
+    [`(,(? aexpr? ae) ,ρ (let ,x ,ρ-prime ,e ,k))
+     `(,e ,(hash-set ρ-prime x (aeval ae ρ)) ,k)]
+    
     ;; Application
-    [`((,e0 ,e1) ,ρ ,k)
-     (let* ([new-k `(ar ,e1 ,ρ ,k)])
-       `(,e0 ,ρ ,new-k))]
+    [`((,ae0 ,aes ...) ,ρ ,k)
+     (match (aeval ae0 ρ)
+       [`(clo (lambda (,xs ...) ,e-body) ,ρ-prime)
+        (let ([new-ρ (foldl (lambda (x v ρ) (hash-set ρ x v)) ρ-prime xs (map (lambda (ae) (aeval ae ρ))))])
+          `(e-body ,new-ρ ,k))])]
+
     ;; Lambdas...
-    [`((lambda (,x) ,e-body) ,ρ ,k)
-     (match k
-       [`(ar ,e ,ρ1 ,k1)
-        `(,e ,ρ1 (fn (lambda (,x) ,e-body) ,ρ ,k1))]
-       [`(fn (lambda (,x1) ,e1) ,ρ1 ,k1)
-        `(,e1 ,(hash-set ρ1 x1 `(clo (lambda (,x) ,e-body) ,ρ)) ,k1)])]))
+    ))
 
 ;; Is this state at a done configuration
 (define (done? state)
@@ -92,6 +116,15 @@
           (h next-state next-state-graph next-state))))
   (h state (hash) null))
 
+;; Render h as a DOT graph
+(define (graphify h)
+  (define lines
+    (flatten (hash-map h (lambda (key value) (map (lambda (v) (format "\"~a\" -> \"~a\"" key v)) (set->list value))))))
+  (displayln "digraph {")
+  (for ([line lines])
+    (displayln (format "  ~a" line)))
+  (displayln "}"))
+
 ;;
 ;; REPL
 ;;
@@ -103,7 +136,7 @@
   (let ([input (read)])
     (if (expr? input)
         ;; Execute the expression
-        (pretty-print (iterate (inject input)))
+        (graphify (iterate (inject input)))
         (displayln "Input expression does not satisfy expr?"))
     (repl)))
 
